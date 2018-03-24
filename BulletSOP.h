@@ -41,6 +41,10 @@ public:
 
 	virtual void getInfoDATEntries(int32_t, int32_t, OP_InfoDATEntries*) override;
 
+	virtual void setupParameters(OP_ParameterManager*) override;
+
+	virtual void pulsePressed(char const*) override;
+
 	virtual char const* getInfoPopupString() override { return _infoString; }
 
 	virtual char const* getWarningString() override { return _warningString; }
@@ -49,30 +53,42 @@ public:
 
 private:
 
-	btScalar getDeltaTimeMicroseconds();
+	btScalar _getDeltaTimeMicroseconds();
 
-	void addSOPGeometry(OP_SOPInput const*);
+	void _addSOPInput(OP_SOPInput const*);
 
-	void worldSetup();
+	void _worldSetup();
 
-	void worldDestroy();
+	void _worldDestroy();
+
+	void _objectsDestroy();
 
 	btBroadphaseInterface* broadphase;
 	btDefaultCollisionConfiguration* collisionConfiguration;
 	btCollisionDispatcher* dispatcher;
 	btSequentialImpulseConstraintSolver* solver;
 	btDiscreteDynamicsWorld* dynamicsWorld;
-
 	btClock clock;
 
-	btAlignedObjectArray<btCollisionShape*>	collisionShapes;
-
-	bool _initialized;
+	bool _reset;
 
 	struct _object {
+		~_object()
+		{
+			delete mesh;
+			delete shape;
+			delete motionState;
+			delete body;
+		}
+
 		int32_t id;
 		float mass;
-		btConvexHullShape* shape;
+
+		btTriangleMesh* mesh;
+		btCollisionShape* shape;
+
+		btMotionState* motionState;
+		btRigidBody* body;
 	};
 
 	std::map<int32_t, _object*> _objects;
