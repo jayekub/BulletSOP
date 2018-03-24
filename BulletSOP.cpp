@@ -162,6 +162,7 @@ BulletSOP::worldDestroy()
 void
 BulletSOP::addSOPGeometry(OP_SOPInput const* sopGeom)
 {
+	/*
 	CustomAttribInfo const* massAttr = sopGeom->getCustomAttribute("mass");
 	CustomAttribInfo const* objIdAttr = sopGeom->getCustomAttribute("objId");
 
@@ -185,8 +186,10 @@ BulletSOP::addSOPGeometry(OP_SOPInput const* sopGeom)
 		_errorString = "expected point attributes mass[1] and/or objId[1](int) not found";
 		return;
 	}
+	*/
 
 	Position const* sopPoints = sopGeom->getPointPositions();
+	ColorInfo const* sopColors = sopGeom->getColors();
 
 	for (int p = 0; p < sopGeom->getNumPrimitives(); ++p)
 	{
@@ -194,7 +197,11 @@ BulletSOP::addSOPGeometry(OP_SOPInput const* sopGeom)
 
 		// XXX only point attrs are supported, assume constant
 		int32_t firstIndex = primInfo.pointIndices[0];
-		int32_t objId = objIdAttr->intData[firstIndex];
+		int32_t objId;// = objIdAttr->intData[firstIndex];
+
+		// XXX hackity hack hack
+		Color const& primColor = sopColors->colors[firstIndex];
+		objId = primColor.r;
 
 		_object* obj;
 		auto objIt = _objects.find(objId);
@@ -204,7 +211,8 @@ BulletSOP::addSOPGeometry(OP_SOPInput const* sopGeom)
 			obj = new _object();
 
 			obj->id = objId;
-			obj->mass = massAttr->floatData[firstIndex];
+			//obj->mass = massAttr->floatData[firstIndex];
+			obj->mass = primColor.g;
 			obj->shape = new btConvexHullShape();
 
 			_objects[objId] = obj;
