@@ -2,6 +2,8 @@
 
 #include <BulletCollision/CollisionShapes/btShapeHull.h>
 
+#include <algorithm>
+#include <limits>
 #include <sstream>
 
 #include <stdio.h>
@@ -31,27 +33,29 @@ BulletSOP::getGeneralInfo(SOP_GeneralInfo* info)
 void
 BulletSOP::execute(SOP_Output* output, OP_Inputs* inputs, void* reserved)
 {
+	if (inputs->getNumInputs() < 1)
+	{
+		return;
+	}
+
 	if (_reset)
 	{
 		_objectsDestroy();
-
-		for (int i = 0; i < inputs->getNumInputs(); ++i)
-		{
-			_addSOPInput(inputs->getInputSOP(i));
-		}
+		_addSOPInput(inputs->getInputSOP(0));
 
 		_reset = false;
-
 	}
-
-	inputs->enablePar("Gravity", 1);
+	else
+	{
+		if (inputs->getParInt("Syncinput") > 0)
+		{
+			_syncSOPInput(inputs->getInputSOP(0));
+		}
+	}
 
 	btScalar gx, gy, gz;
 	inputs->getParDouble3("Gravity", gx, gy, gz);
 	dynamicsWorld->setGravity(btVector3(gx, gy, gz));
-
-	inputs->enablePar("Maxsubsteps", 1);
-	inputs->enablePar("Timeinc", 1);
 
 	btScalar ms = _getDeltaTimeMicroseconds()/1e6;
 	dynamicsWorld->stepSimulation(
@@ -220,7 +224,7 @@ BulletSOP::setupParameters(
 		OP_NumericParameter maxSubsteps;
 
 		maxSubsteps.name = "Maxsubsteps";
-		maxSubsteps.label = "MaxSubsteps";
+		maxSubsteps.label = "Max Substeps";
 		maxSubsteps.page = "Bullet";
 		maxSubsteps.defaultValues[0] = 1.;
 		maxSubsteps.minSliders[0] = 0.;
@@ -234,7 +238,7 @@ BulletSOP::setupParameters(
 		OP_NumericParameter fixedTimeStep;
 
 		fixedTimeStep.name = "Timeinc";
-		fixedTimeStep.label = "TimeInc";
+		fixedTimeStep.label = "Time Inc";
 		fixedTimeStep.page = "Bullet";
 		fixedTimeStep.defaultValues[0] = 1. / 60.;
 		fixedTimeStep.minSliders[0] = 0.;
@@ -255,6 +259,18 @@ BulletSOP::setupParameters(
 		gravity.defaultValues[2] = 0;
 
 		OP_ParAppendResult res = manager->appendXYZ(gravity);
+		assert(res == OP_ParAppendResult::Success);
+	}
+
+	{
+		OP_NumericParameter syncInput;
+
+		syncInput.name = "Syncinput";
+		syncInput.label = "Sync Input";
+		syncInput.page = "Bullet";
+		syncInput.defaultValues[0] = 0;
+
+		OP_ParAppendResult res = manager->appendToggle(syncInput);
 		assert(res == OP_ParAppendResult::Success);
 	}
 
@@ -391,15 +407,24 @@ BulletSOP::_addSOPInput(OP_SOPInput const* sopInput)
 		case PrimitiveType::Polygon: 
 			if (primInfo.numVertices == 3)
 			{
-				Position const& position0 = sopPoints[primInfo.pointIndices[0]];
-				Position const& position1 = sopPoints[primInfo.pointIndices[1]];
-				Position const& position2 = sopPoints[primInfo.pointIndices[2]];
+				int const& index0 = primInfo.pointIndices[0];
+				int const& index1 = primInfo.pointIndices[1];
+				int const& index2 = primInfo.pointIndices[2];
+
+				obj->inputIndices.push_back(index0);
+				obj->inputIndices.push_back(index1);
+				obj->inputIndices.push_back(index2);
+
+				Position const& position0 = sopPoints[index0];
+				Position const& position1 = sopPoints[index1];
+				Position const& position2 = sopPoints[index2];
 
 				btVector3 vertex0(position0.x, position0.y, position0.z);
 				btVector3 vertex1(position1.x, position1.y, position1.z);
 				btVector3 vertex2(position2.x, position2.y, position2.z);
 
-				obj->mesh->addTriangle(vertex0, vertex1, vertex2, true);
+				// XXX disabling de-duplication here to support syncing with input. might be nice to make this optional
+				obj->mesh->addTriangle(vertex0, vertex1, vertex2, false);
 			}
 			else
 			{
@@ -467,6 +492,76 @@ BulletSOP::_addSOPInput(OP_SOPInput const* sopInput)
 
 		dynamicsWorld->addRigidBody(obj->body);
 
+	}
+}
+
+void
+BulletSOP::_syncSOPInput(OP_SOPInput const* sopInput)
+{
+	btScalar minScalar = std::numeric_limits<btScalar>::min();
+	btScalar maxScalar = std::numeric_limits<btScalar>::max();
+
+	// XXX assumes input topology hasn't changed
+
+	Position const* sopPoints = sopInput->getPointPositions();
+
+	for (auto item : _objects)
+	{
+		_object* obj = item.second;
+
+		// only sync static objects
+		if (obj->mass > 0)
+		{
+			continue;
+		}
+
+		unsigned char* vertexBase;
+		int numVerts;
+		PHY_ScalarType type;
+		int vertexStride;
+		unsigned char* indexBase;
+		int indexStride;
+		int numFaces;
+		PHY_ScalarType indicesType;
+
+		btVector3 minVert(maxScalar, maxScalar, maxScalar);
+		btVector3 maxVert(minScalar, minScalar, minScalar);
+
+		for (int s = 0; s < obj->mesh->getNumSubParts(); ++s)
+		{
+			obj->mesh->getLockedVertexIndexBase(
+				&vertexBase, numVerts, type, vertexStride,
+				&indexBase, indexStride, numFaces, indicesType, s);
+
+			for (int v = 0; v < obj->inputIndices.size(); ++v)
+			{
+				Position const& inputVert = sopPoints[obj->inputIndices[v]];
+				double* vert = reinterpret_cast<double*>(vertexBase + v * vertexStride);
+
+				vert[0] = inputVert.x;
+				vert[1] = inputVert.y;
+				vert[2] = inputVert.z;
+
+				minVert[0] = std::min(minVert[0], static_cast<btScalar>(inputVert.x));
+				minVert[1] = std::min(minVert[1], static_cast<btScalar>(inputVert.y));
+				minVert[2] = std::min(minVert[2], static_cast<btScalar>(inputVert.z));
+
+				maxVert[0] = std::max(maxVert[0], static_cast<btScalar>(inputVert.x));
+				maxVert[1] = std::max(maxVert[1], static_cast<btScalar>(inputVert.y));
+				maxVert[2] = std::max(maxVert[2], static_cast<btScalar>(inputVert.z));
+			}
+
+			obj->mesh->unLockVertexBase(s);
+		}
+
+		btVector3 center = (minVert + maxVert) / 2.;
+		_recenterMesh(obj->mesh, center);
+
+		btTransform transform;
+		transform.setIdentity();
+		transform.setOrigin(center);
+
+		obj->motionState->setWorldTransform(transform);
 	}
 }
 
