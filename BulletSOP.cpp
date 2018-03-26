@@ -59,7 +59,7 @@ BulletSOP::execute(SOP_Output* output, OP_Inputs* inputs, void* reserved)
 		inputs->getParInt("Maxsubsteps"),
 		inputs->getParDouble("Timeinc"));
 
-	int outPointIndex = 0;
+	int outIndex = 0;
 
 	for (auto item : _objects)
 	{
@@ -97,25 +97,58 @@ BulletSOP::execute(SOP_Output* output, OP_Inputs* inputs, void* reserved)
 				continue;
 			}
 
+			for (int i = 0; i < numFaces; ++i)
+			{
+				int const* indices = reinterpret_cast<int const*>(indexBase + i * indexStride);
+
+				double const* vertBase0 = reinterpret_cast<double const*>(vertexBase + indices[0] * vertexStride);
+				double const* vertBase1 = reinterpret_cast<double const*>(vertexBase + indices[1] * vertexStride);
+				double const* vertBase2 = reinterpret_cast<double const*>(vertexBase + indices[2] * vertexStride);
+
+				btVector3 vert0(vertBase0[0], vertBase0[1], vertBase0[2]);
+				btVector3 vert1(vertBase1[0], vertBase1[1], vertBase1[2]);
+				btVector3 vert2(vertBase2[0], vertBase2[1], vertBase2[2]);
+
+				vert0 = transform*vert0;
+				vert1 = transform*vert1;
+				vert2 = transform*vert2;
+
+				output->addPoint(static_cast<float>(vert0.x()), static_cast<float>(vert0.y()), static_cast<float>(vert0.z()));
+				output->addPoint(static_cast<float>(vert1.x()), static_cast<float>(vert1.y()), static_cast<float>(vert1.z()));
+				output->addPoint(static_cast<float>(vert2.x()), static_cast<float>(vert2.y()), static_cast<float>(vert2.z()));
+
+				output->addTriangle(outIndex, outIndex + 1, outIndex + 2);
+
+				outIndex += 3;
+			}
+
+			/* XXX this should be more efficient, why doesn't it work??
+			int indexOffset = outIndex;
+
 			for (int v = 0; v < numVerts; ++v)
 			{
 				double const* vert = reinterpret_cast<double const*>(vertexBase + v*vertexStride);
 				btVector3 point(vert[0], vert[1], vert[2]);
 
-				point = transform*point;
+				point = transform * point;
 
 				output->addPoint(
 					static_cast<float>(point.x()),
 					static_cast<float>(point.y()),
 					static_cast<float>(point.z()));
 
-				if (v%3 == 2)
-				{
-					output->addTriangle(outPointIndex - 2, outPointIndex - 1, outPointIndex);
-				}
-
-				++outPointIndex;
+				++outIndex;
 			}
+
+			for (int i = 0; i < numFaces; ++i)
+			{
+				int const* indices = reinterpret_cast<int const*>(indexBase + i*indexStride);
+				output->addTriangle(
+					indexOffset + indices[0],
+					indexOffset + indices[1],
+					indexOffset + indices[2]);
+			}
+			*/
 
 			obj->mesh->unLockReadOnlyVertexBase(s);
 		}
@@ -286,6 +319,7 @@ BulletSOP::_objectsDestroy()
 {
 	for (auto item : _objects)
 	{
+		dynamicsWorld->removeRigidBody(item.second->body);
 		delete item.second;
 	}
 
@@ -384,15 +418,22 @@ BulletSOP::_addSOPInput(OP_SOPInput const* sopInput)
 	for (auto item : _objects)
 	{
 		_object* obj = item.second;
+		btConvexTriangleMeshShape meshShape(obj->mesh);
+
+		btVector3 primCenter;
+		btScalar primRadius;
+		meshShape.getBoundingSphere(primCenter, primRadius);
+
+		_recenterMesh(obj->mesh, primCenter);
 
 		bool dynamic = (obj->mass > 0.);
 		btVector3 localInertia(0, 0, 0);
 
 		if (dynamic)
 		{
-			btConvexTriangleMeshShape meshShape(obj->mesh);
-			btShapeHull meshHull(&meshShape);
+			// XXX prob need another btConvext...
 
+			btShapeHull meshHull(&meshShape);
 			meshHull.buildHull(meshShape.getMargin());
 
 			btConvexHullShape *hullShape = new btConvexHullShape();
@@ -411,16 +452,10 @@ BulletSOP::_addSOPInput(OP_SOPInput const* sopInput)
 			obj->shape = new btBvhTriangleMeshShape(obj->mesh, true);
 		}
 
-		// use bounding sphere to get reasonable local space for prim
-		btVector3 primCenter;
-		btScalar primRadius;
-		obj->shape->getBoundingSphere(primCenter, primRadius);
-
 		btTransform transform;
 		transform.setIdentity();
 		transform.setOrigin(primCenter);
 
-		//using motionstate is recommended, it provides interpolation capabilities, and only synchronizes 'active' objects
 		obj->motionState = new btDefaultMotionState(transform);
 		btRigidBody::btRigidBodyConstructionInfo rbInfo(obj->mass, obj->motionState, obj->shape, localInertia);
 		obj->body = new btRigidBody(rbInfo);
@@ -431,6 +466,38 @@ BulletSOP::_addSOPInput(OP_SOPInput const* sopInput)
 		}
 
 		dynamicsWorld->addRigidBody(obj->body);
+
+	}
+}
+
+void
+BulletSOP::_recenterMesh(btTriangleMesh* mesh, btVector3 const& center)
+{
+	unsigned char* vertexBase;
+	int numVerts;
+	PHY_ScalarType type;
+	int vertexStride;
+	unsigned char* indexBase;
+	int indexStride;
+	int numFaces;
+	PHY_ScalarType indicesType;
+
+	for (int s = 0; s < mesh->getNumSubParts(); ++s)
+	{
+		mesh->getLockedVertexIndexBase(
+			&vertexBase, numVerts, type, vertexStride,
+			&indexBase, indexStride, numFaces, indicesType, s);
+
+		for (int v = 0; v < numVerts; ++v)
+		{
+			double* vert = reinterpret_cast<double*>(vertexBase + v * vertexStride);
+
+			vert[0] -= center.x();
+			vert[1] -= center.y();
+			vert[2] -= center.z();
+		}
+
+		mesh->unLockVertexBase(s);
 	}
 }
 

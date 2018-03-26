@@ -63,6 +63,8 @@ private:
 
 	void _objectsDestroy();
 
+	void _recenterMesh(btTriangleMesh*, btVector3 const&);
+
 	btBroadphaseInterface* broadphase;
 	btDefaultCollisionConfiguration* collisionConfiguration;
 	btCollisionDispatcher* dispatcher;
